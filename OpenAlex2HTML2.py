@@ -23,7 +23,7 @@ def fix_dict_strings(obj):
 url = (
     "https://api.openalex.org/works?"
     "page=1&"
-    "filter=authorships.author.id:a5107139754|a5108684139|a5025520854|a5036760070|a5001720782|"
+    "filter=authorships.author.id:a5107139754|a5108684139|a5025520854|a5036760070|a5001720782|a5058635802|"
     "a5066544731|a5037784628|a5017428281|a5058589735|a5027644564|a5041327556|a1995438260|a5107139754,"
     "authorships.institutions.lineage:i75929689|i140172145"
     # optional year range to exclude older items like 2013:
