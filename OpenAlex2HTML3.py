@@ -24,32 +24,73 @@ url = (
     "https://api.openalex.org/works?"
     "page=1&"
     "filter=authorships.author.id:a5107139754|a5108684139|a5025520854|a5036760070|a5001720782|a5058635802|"
-    "a5066544731|a5037784628|a5017428281|a5058589735|a5027644564|a5041327556|a1995438260|a5107139754|a5028359320,"
+    "a5066544731|a5037784628|a5017428281|a5058589735|a5027644564|a5041327556|a1995438260|a5028359320,"
     "authorships.institutions.lineage:i75929689|i140172145"
-    ",publication_year:2015-2025"
+    ",publication_year:2016-2026"
     "&sort=publication_year:desc&per_page=200"
 )
 
 data = requests.get(url).json()
 
 specific_work_ids = ["W4406278796", "W4414299727", "W4414003956", "W4413410768", "W4406080021",
-                     "W4404789954", "W4402922983", "W4408637455", "W4414848838","W7106616526"]  
+                     "W4404789954", "W4402922983", "W4408637455", "W4414848838"]  
+
 results = data.get("results", [])
-existing_ids = {w["id"] for w in results}
+
+# Add specifically requested works
 specific_works = []
+
 for wid in specific_work_ids:
     work_url = f"https://api.openalex.org/works/{wid}"
-    work = requests.get(work_url).json()
-    
-    if work.get("id") not in existing_ids:
-        specific_works.append(work)
-        existing_ids.add(work["id"])   # avoid duplicates if multiple lists used later
 
-# Insert all of them at the top in order
+    response = requests.get(work_url, timeout=30)
+
+    if response.status_code != 200:
+        print(f"Could not retrieve {wid}: HTTP {response.status_code}")
+        continue
+
+    try:
+        work = response.json()
+    except requests.exceptions.JSONDecodeError:
+        print(f"Could not decode JSON for {wid}")
+        continue
+
+    specific_works.append(work)
 
 
-#data["results"].insert(0, specific_work)
-data["results"] = specific_works + results
+# Combine all works
+all_results = specific_works + results
+
+
+# Deduplicate publications.
+# Prefer DOI because the same publication can potentially have
+# more than one OpenAlex record.
+deduplicated_results = []
+seen = set()
+
+for work in all_results:
+
+    doi = (
+        work.get("doi")
+        or (work.get("ids") or {}).get("doi")
+        or ""
+    ).strip().lower()
+
+    openalex_id = work.get("id", "")
+
+    if doi:
+        key = ("doi", doi)
+    else:
+        key = ("openalex", openalex_id)
+
+    if key in seen:
+        print(f"Removing duplicate: {work.get('title')} {doi}")
+        continue
+
+    seen.add(key)
+    deduplicated_results.append(work)
+
+data["results"] = deduplicated_results
 
 data = fix_dict_strings(data)
 
