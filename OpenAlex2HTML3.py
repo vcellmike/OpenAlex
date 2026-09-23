@@ -20,17 +20,72 @@ def fix_dict_strings(obj):
     else:
         return obj
 
-url = (
-    "https://api.openalex.org/works?"
-    "page=1&"
-    "filter=authorships.author.id:a5107139754|a5108684139|a5025520854|a5036760070|a5001720782|a5058635802|"
-    "a5066544731|a5037784628|a5017428281|a5058589735|a5027644564|a5041327556|a1995438260|a5028359320,"
-    "authorships.institutions.lineage:i75929689|i140172145"
-    ",publication_year:2016-2026"
-    "&sort=publication_year:desc&per_page=200"
+base_url = "https://api.openalex.org/works"
+
+filters = (
+    "authorships.author.id:"
+    "a5107139754|a5108684139|a5025520854|a5036760070|"
+    "a5001720782|a5058635802|a5066544731|a5037784628|"
+    "a5017428281|a5058589735|a5027644564|a5041327556|"
+    "a1995438260|a5028359320,"
+    "authorships.institutions.lineage:i75929689|i140172145,"
+    "publication_year:2016-2026"
 )
 
-data = requests.get(url).json()
+params = {
+    "filter": filters,
+    "sort": "publication_year:desc",
+    "per_page": 100,
+    "cursor": "*"
+}
+
+results = []
+page_number = 0
+total_expected = None
+
+while True:
+    page_number += 1
+
+    response = requests.get(
+        base_url,
+        params=params,
+        timeout=60
+    )
+    response.raise_for_status()
+
+    page_data = response.json()
+
+    if total_expected is None:
+        total_expected = page_data.get("meta", {}).get("count")
+        print(f"OpenAlex reports {total_expected} matching works")
+
+    batch = page_data.get("results", [])
+
+    if not batch:
+        break
+
+    results.extend(batch)
+
+    print(
+        f"Page {page_number}: "
+        f"{len(batch)} works; "
+        f"{len(results)} retrieved total"
+    )
+
+    next_cursor = page_data.get("meta", {}).get("next_cursor")
+
+    if not next_cursor:
+        break
+
+    params["cursor"] = next_cursor
+
+
+print(f"Finished: retrieved {len(results)} OpenAlex works")
+
+# Re-create data in the form expected by the rest of the script
+data = {
+    "results": results
+}
 
 specific_work_ids = ["W4406278796", "W4414299727", "W4414003956", "W4413410768", "W4406080021",
                      "W4404789954", "W4402922983", "W4408637455", "W4414848838"]  
@@ -59,43 +114,119 @@ for wid in specific_work_ids:
 
 
 # Combine all works
+
+# Combine all works
 all_results = specific_works + results
 
+# Sort newest first, so when multiple Zenodo versions are found,
+# the newest version is retained.
+all_results.sort(
+    key=lambda w: w.get("publication_date") or "",
+    reverse=True
+)
 
-# Deduplicate publications.
-# Prefer DOI because the same publication can potentially have
-# more than one OpenAlex record.
+
+def normalize_doi(doi):
+    """Return DOI without https://doi.org/ prefix."""
+    if not doi:
+        return ""
+
+    doi = doi.strip().lower()
+
+    if doi.startswith("https://doi.org/"):
+        doi = doi[len("https://doi.org/"):]
+    elif doi.startswith("http://doi.org/"):
+        doi = doi[len("http://doi.org/"):]
+
+    return doi
+
+
+# Cache Zenodo lookups so the same record is never requested twice
+zenodo_concept_cache = {}
+
+
+def get_dedup_key(work):
+    doi = (
+        work.get("doi")
+        or (work.get("ids") or {}).get("doi")
+        or ""
+    )
+
+    doi = normalize_doi(doi)
+
+    # Special handling for Zenodo versioned records
+    if doi.startswith("10.5281/zenodo."):
+
+        record_id = doi.rsplit(".", 1)[-1]
+
+        if record_id not in zenodo_concept_cache:
+            try:
+                r = requests.get(
+                    f"https://zenodo.org/api/records/{record_id}",
+                    timeout=30
+                )
+                r.raise_for_status()
+
+                zdata = r.json()
+
+                concept_doi = normalize_doi(
+                    zdata.get("conceptdoi", "")
+                )
+
+                if concept_doi:
+                    zenodo_concept_cache[record_id] = concept_doi
+                else:
+                    zenodo_concept_cache[record_id] = doi
+
+            except (
+                requests.RequestException,
+                requests.exceptions.JSONDecodeError
+            ) as e:
+                print(
+                    f"Could not obtain Zenodo concept DOI "
+                    f"for {doi}: {e}"
+                )
+                zenodo_concept_cache[record_id] = doi
+
+        return (
+            "zenodo-concept",
+            zenodo_concept_cache[record_id]
+        )
+
+    # Normal publication: DOI is the preferred identifier
+    if doi:
+        return ("doi", doi)
+
+    # Fall back to OpenAlex ID when there is no DOI
+    return ("openalex", work.get("id", ""))
+
+
+# Deduplicate
 deduplicated_results = []
 seen = set()
 
 for work in all_results:
 
-    doi = (
-        work.get("doi")
-        or (work.get("ids") or {}).get("doi")
-        or ""
-    ).strip().lower()
-
-    openalex_id = work.get("id", "")
-
-    if doi:
-        key = ("doi", doi)
-    else:
-        key = ("openalex", openalex_id)
+    key = get_dedup_key(work)
 
     if key in seen:
-        print(f"Removing duplicate: {work.get('title')} {doi}")
+        print(
+            f"Removing duplicate/version: "
+            f"{work.get('title')} "
+            f"{work.get('doi', '')}"
+        )
         continue
 
     seen.add(key)
     deduplicated_results.append(work)
+
 
 data["results"] = deduplicated_results
 
 data = fix_dict_strings(data)
 
 # List of last names to underline
-underline_last_names = {"blinov", "agmon", "roy", "moraru", "mendes","guertin","kshitiz", "gupta","loew","mayer",
+underline_last_names = {"blinov", "schaff","agmon", "roy", "moraru", "mendes","guertin","kshitiz", "gupta","loew","mayer",
                         "slepchenko","cowan","acker","sarabipour","vera-licona","rodionov","ji yu","yi wu","Abhijit"}
 
 
